@@ -288,16 +288,55 @@
             openModal('studentPresenceModal');
         }
 
+        const MAX_FILE_SIZE_MB = 15; // batas ukuran file tugas
+
+        // Ubah File object jadi base64 murni (tanpa prefix "data:...;base64,")
+        function fileToBase64(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => {
+                    const base64 = reader.result.split(',')[1];
+                    resolve(base64);
+                };
+                reader.onerror = reject;
+                reader.readAsDataURL(file);
+            });
+        }
+
         window.submitPresence = async function(e) {
             e.preventDefault();
             const matId = document.getElementById('active-material-id').value;
             const learned = document.getElementById('didapat').value;
-            const assignment = document.getElementById('tugas').value;
+            const fileInput = document.getElementById('tugas');
+            const file = fileInput.files[0];
             const rating = document.getElementById('rating_perasaan').value;
 
             if(!rating) return showNotification("Jangan lupa pilih emoji perasaanmu! 😊", "error");
 
+            if (file && file.size > MAX_FILE_SIZE_MB * 1024 * 1024) {
+                return showNotification(`Ukuran file maksimal ${MAX_FILE_SIZE_MB}MB.`, "error");
+            }
+
             try {
+                let assignmentLink = '';
+
+                // Jika ada file yang dipilih, upload dulu ke Google Drive
+                if (file) {
+                    showLoading("Mengupload file tugas...");
+                    const base64Data = await fileToBase64(file);
+                    const uploadResult = await apiPost('uploadFile', {
+                        fileName: file.name,
+                        mimeType: file.type,
+                        fileData: base64Data
+                    });
+
+                    if (!uploadResult.success) {
+                        hideLoading();
+                        return showNotification(uploadResult.message || "Gagal upload file tugas.", "error");
+                    }
+                    assignmentLink = uploadResult.url;
+                }
+
                 showLoading("Mengirim datamu...");
                 const result = await apiPost('addPresence', {
                     materialId: matId,
@@ -305,7 +344,7 @@
                     studentName: window.appState.currentUser.name,
                     nrp: window.appState.currentUser.nrp,
                     learned: learned,
-                    assignmentLink: assignment,
+                    assignmentLink: assignmentLink,
                     rating: rating
                 });
                 hideLoading();
@@ -441,10 +480,68 @@
                         <label class="block text-sm font-bold text-gray-700 mb-1">Kelas</label>
                         <select id="reg-kelas" required class="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none appearance-none">
                             <option value="" disabled selected>Pilih Kelas...</option>
-                            <option value="TK">TK / PAUD</option>
-                            <option value="SD">SD</option>
-                            <option value="SMP">SMP</option>
-                            <option value="Lainnya">Lainnya</option>
+                            <option value="X Internasional 1">X Internasional 1</option>
+                            <option value="X Internasional 2">X Internasional 2</option>
+                            <option value="X Internasional 3">X Internasional 3</option>
+                            <option value="X Internasional 4">X Internasional 4</option>
+                            <option value="X Unggulan 1">X Unggulan 1</option>
+                            <option value="X Unggulan 2">X Unggulan 2</option>
+                            <option value="X Unggulan 3">X Unggulan 3</option>
+                            <option value="X Unggulan 4">X Unggulan 4</option>
+                            <option value="X Unggulan 5">X Unggulan 5</option>
+                            <option value="X Unggulan 6">X Unggulan 6</option>
+                            <option value="X Unggulan 7">X Unggulan 7</option>
+                            <option value="X Unggulan 8">X Unggulan 8</option>
+                            <option value="X Reguler 1">X Reguler 1</option>
+                            <option value="X Reguler 2">X Reguler 2</option>
+                            <option value="X Reguler 3">X Reguler 3</option>
+                            <option value="X Reguler 4">X Reguler 4</option>
+                            <option value="X Reguler 5">X Reguler 5</option>
+                            <option value="X Reguler 6">X Reguler 6</option>
+                            <option value="X Reguler 7">X Reguler 7</option>
+                            <option value="XI Internasional 1">XI Internasional 1</option>
+                            <option value="XI Internasional 2">XI Internasional 2</option>
+                            <option value="XI Internasional 3">XI Internasional 3</option>
+                            <option value="XI Internasional 4">XI Internasional 4</option>
+                            <option value="XI Unggulan 1">XI Unggulan 1</option>
+                            <option value="XI Unggulan 2">XI Unggulan 2</option>
+                            <option value="XI Unggulan 3">XI Unggulan 3</option>
+                            <option value="XI Unggulan 4">XI Unggulan 4</option>
+                            <option value="XI Unggulan 5">XI Unggulan 5</option>
+                            <option value="XI Unggulan 6">XI Unggulan 6</option>
+                            <option value="XI Unggulan 7">XI Unggulan 7</option>
+                            <option value="XI Unggulan 8">XI Unggulan 8</option>
+                            <option value="XI Reguler 1">XI Reguler 1</option>
+                            <option value="XI Reguler 2">XI Reguler 2</option>
+                            <option value="XI Reguler 3">XI Reguler 3</option>
+                            <option value="XI Reguler 4">XI Reguler 4</option>
+                            <option value="XI Reguler 5">XI Reguler 5</option>
+                            <option value="XI Reguler 6">XI Reguler 6</option>
+                            <option value="XI Reguler 7">XI Reguler 7</option>
+                            <option value="XI Reguler 8">XI Reguler 8</option>
+                            <option value="XI Reguler 9">XI Reguler 9</option>
+                            <option value="XI Reguler 10">XI Reguler 10</option>
+                            <option value="XII Internasional 1">XII Internasional 1</option>
+                            <option value="XII Internasional 2">XII Internasional 2</option>
+                            <option value="XII Internasional 3">XII Internasional 3</option>
+                            <option value="XII Internasional 4">XII Internasional 4</option>
+                            <option value="XII Unggulan 1">XII Unggulan 1</option>
+                            <option value="XII Unggulan 2">XII Unggulan 2</option>
+                            <option value="XII Unggulan 3">XII Unggulan 3</option>
+                            <option value="XII Unggulan 4">XII Unggulan 4</option>
+                            <option value="XII Unggulan 5">XII Unggulan 5</option>
+                            <option value="XII Unggulan 6">XII Unggulan 6</option>
+                            <option value="XII Unggulan 7">XII Unggulan 7</option>
+                            <option value="XII Unggulan 8">XII Unggulan 8</option>
+                            <option value="XII Reguler 1">XII Reguler 1</option>
+                            <option value="XII Reguler 2">XII Reguler 2</option>
+                            <option value="XII Reguler 3">XII Reguler 3</option>
+                            <option value="XII Reguler 4">XII Reguler 4</option>
+                            <option value="XII Reguler 5">XII Reguler 5</option>
+                            <option value="XII Reguler 6">XII Reguler 6</option>
+                            <option value="XII Reguler 7">XII Reguler 7</option>
+                            <option value="XII Reguler 8">XII Reguler 8</option>
+                            <option value="XII Reguler 9">XII Reguler 9</option>
                         </select>
                     </div>
                     <button type="submit" id="reg-submit-btn" class="w-full bg-green-500 hover:bg-green-600 text-white font-bold py-3 rounded-xl transition-all shadow-lg shadow-green-200 mt-2">Daftar Sekarang</button>
@@ -670,9 +767,9 @@
 
                     <!-- Input Tugas -->
                     <div class="space-y-1">
-                        <label class="block text-sm font-bold text-gray-700 ml-1">Kumpulkan Tugas (Link/Teks) 📎</label>
-                        <input type="text" id="tugas" placeholder="Cth: Link Google Drive, Link Canva, atau jawaban singkat..." class="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none text-sm">
-                        <p class="text-xs text-gray-400 ml-1">Kosongkan jika tidak ada tugas.</p>
+                        <label class="block text-sm font-bold text-gray-700 ml-1">Kumpulkan Tugas (Upload File) 📎</label>
+                        <input type="file" id="tugas" class="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none text-sm file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-indigo-100 file:text-indigo-700 file:font-bold hover:file:bg-indigo-200">
+                        <p class="text-xs text-gray-400 ml-1" id="tugas-info">File akan otomatis terupload ke Google Drive. Kosongkan jika tidak ada tugas.</p>
                     </div>
 
                     <!-- Input Kesan (Emoji) -->
