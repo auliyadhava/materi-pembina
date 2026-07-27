@@ -3,1035 +3,156 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Presensi & Materi</title>
-    
-    <!-- Memuat Tailwind CSS -->
+    <title>Dashboard Google Drive - Auliya Dhava</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    
-    <!-- Memuat Google Fonts (Nunito) -->
-    <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800&display=swap" rel="stylesheet">
-    
-    <!-- Memuat FontAwesome -->
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-
-    <!-- Konfigurasi Backend: Google Apps Script -->
-    <script>
-        // ==========================================
-        // KONFIGURASI
-        // ==========================================
-        // GANTI dengan URL Web App hasil Deploy Apps Script Anda
-        const API_URL = "https://script.google.com/macros/s/AKfycbyVQ1g-P4jwsnANyX19pnKOfeTl9-Fo4HgLX69hkmdDQs6ZBgE9TGUgychrctEMyHWy/exec";
-
-        const POLLING_INTERVAL = 5000; // refresh data tiap 5 detik
-        let pollingTimer = null;
-
-        // State Global Aplikasi
-        window.appState = {
-            currentUser: null, // { id, name, nrp, role: 'admin'|'student', kelas }
-            settings: { registrationOpen: false },
-            materials: [],
-            presences: [],
-            users: []
-        };
-
-        // ==========================================
-        // HELPER PEMANGGILAN API
-        // ==========================================
-        // GET (baca data) -> lewat query string
-        async function apiGet(action, params = {}) {
-            const query = new URLSearchParams({ action, ...params }).toString();
-            const res = await fetch(`${API_URL}?${query}`);
-            return res.json();
-        }
-
-        // POST (tulis data) -> body dikirim sebagai teks JSON
-        // (sengaja TIDAK set header Content-Type: application/json
-        // supaya browser mengirim sebagai "simple request" dan tidak
-        // kena preflight CORS yang tidak didukung Apps Script)
-        async function apiPost(action, payload = {}) {
-            const res = await fetch(API_URL, {
-                method: "POST",
-                body: JSON.stringify({ action, ...payload })
-            });
-            return res.json();
-        }
-
-        // ==========================================
-        // INISIALISASI & AUTENTIKASI
-        // ==========================================
-        async function initApp() {
-            try {
-                await refreshAllData();
-
-                // Sembunyikan loading utama, tampilkan layar login
-                document.getElementById('main-loading').classList.add('hidden');
-                document.getElementById('auth-view').classList.remove('hidden');
-
-                startPolling();
-            } catch (error) {
-                console.error("Init Error:", error);
-                showNotification("Gagal terhubung ke database. Cek koneksi/API_URL.", "error");
-                document.getElementById('main-loading').classList.add('hidden');
-                document.getElementById('auth-view').classList.remove('hidden');
-            }
-        }
-
-        // Ambil semua data dari Sheets, lalu render ulang tampilan yang aktif
-        async function refreshAllData() {
-            const [settingsRes, materialsRes, presencesRes, usersRes] = await Promise.all([
-                apiGet('getSettings'),
-                apiGet('getMaterials'),
-                apiGet('getPresences'),
-                apiGet('getUsers')
-            ]);
-
-            if (settingsRes.success) window.appState.settings = settingsRes.data;
-            if (materialsRes.success) {
-                window.appState.materials = materialsRes.data.sort((a, b) => b.createdAt - a.createdAt);
-            }
-            if (presencesRes.success) {
-                window.appState.presences = presencesRes.data.sort((a, b) => b.timestamp - a.timestamp);
-            }
-            if (usersRes.success) window.appState.users = usersRes.data;
-
-            updateAuthUI();
-            updateAdminSettingsUI();
-
-            if (window.appState.currentUser?.role === 'admin') renderAdminMaterials();
-            if (window.appState.currentUser?.role === 'student') renderStudentMaterials();
-        }
-
-        // Polling berkala menggantikan onSnapshot realtime Firestore
-        function startPolling() {
-            if (pollingTimer) clearInterval(pollingTimer);
-            pollingTimer = setInterval(refreshAllData, POLLING_INTERVAL);
-        }
-
-        // ==========================================
-        // FUNGSI AKSI AUTENTIKASI (Simulasi Akun)
-        // ==========================================
-        window.loginAsAdmin = async function() {
-            const passcode = document.getElementById('admin-passcode').value;
-            if (passcode === 'rplpesat123') { // Hardcoded untuk demo
-                window.appState.currentUser = { id: 'admin_master', name: 'Administrator', role: 'admin' };
-                switchToView('admin-dashboard');
-                await refreshAllData();
-                showNotification("Berhasil masuk sebagai Admin!", "success");
-            } else {
-                showNotification("Passcode Admin salah!", "error");
-            }
-        }
-
-        window.loginAsStudent = async function() {
-            const nrp = document.getElementById('login-nrp').value.trim();
-            if (!nrp) return showNotification("Masukkan NRP Anda!", "error");
-
-            // Cari user di database (data sudah dimuat di appState.users)
-            const user = window.appState.users.find(u => String(u.nrp) === nrp && u.role === 'student');
-            if (user) {
-                user.id = user.nrp; // gunakan NRP sebagai ID unik murid (sheet tidak punya kolom id user)
-                window.appState.currentUser = user;
-                switchToView('student-dashboard');
-                document.getElementById('student-name-display').innerText = user.name;
-                await refreshAllData();
-                showNotification(`Selamat datang kembali, ${user.name}!`, "success");
-            } else {
-                showNotification("NRP tidak ditemukan. Silakan daftar terlebih dahulu.", "error");
-            }
-        }
-
-        window.registerStudent = async function(e) {
-            e.preventDefault();
-            if (!window.appState.settings.registrationOpen) {
-                return showNotification("Pendaftaran saat ini ditutup oleh Admin.", "error");
-            }
-
-            const nrp = document.getElementById('reg-nrp').value.trim();
-            const name = document.getElementById('reg-name').value.trim();
-            const kelas = document.getElementById('reg-kelas').value;
-
-            try {
-                showLoading("Mendaftarkan akun...");
-                const result = await apiPost('addUser', { nrp, name, kelas });
-                hideLoading();
-
-                if (!result.success) {
-                    return showNotification(result.message || "Gagal mendaftar.", "error");
-                }
-
-                await refreshAllData();
-                showNotification("Pendaftaran berhasil! Silakan masuk.", "success");
-                toggleAuthMode('login'); // Pindah ke tab login
-                document.getElementById('registerForm').reset();
-            } catch (error) {
-                hideLoading();
-                console.error("Register error:", error);
-                showNotification("Gagal mendaftar.", "error");
-            }
-        }
-
-        window.logout = function() {
-            window.appState.currentUser = null;
-            switchToView('auth-view');
-            // Reset forms
-            document.getElementById('admin-passcode').value = '';
-            document.getElementById('login-nrp').value = '';
-        }
-
-        // ==========================================
-        // FUNGSI ADMIN
-        // ==========================================
-        window.toggleRegistration = async function() {
-            const current = window.appState.settings.registrationOpen;
-            try {
-                const result = await apiPost('updateSettings', { key: 'registrationOpen', value: !current });
-                if (!result.success) return showNotification("Gagal mengubah status pendaftaran.", "error");
-                await refreshAllData();
-                showNotification(`Pendaftaran ${!current ? 'dibuka' : 'ditutup'}.`, "success");
-            } catch (error) {
-                console.error("Toggle error:", error);
-                showNotification("Gagal mengubah status pendaftaran.", "error");
-            }
-        }
-
-        window.createNewMaterial = async function(e) {
-            e.preventDefault();
-            const title = document.getElementById('mat-title').value;
-            const pembina = document.getElementById('mat-pembina').value;
-            const desc = document.getElementById('mat-desc').value;
-
-            try {
-                showLoading("Membuat sesi materi...");
-                const result = await apiPost('addMaterial', { title, pembina, description: desc });
-                hideLoading();
-
-                if (!result.success) {
-                    return showNotification(result.message || "Gagal membuat materi.", "error");
-                }
-
-                await refreshAllData();
-                showNotification("Materi baru berhasil dibuat dan sesi dimulai!", "success");
-                document.getElementById('createMaterialForm').reset();
-                closeModal('createMaterialModal');
-            } catch (error) {
-                hideLoading();
-                showNotification("Gagal membuat materi.", "error");
-            }
-        }
-
-        window.finishMaterial = async function(matId) {
-            try {
-                const result = await apiPost('updateMaterial', { id: matId, status: 'completed' });
-                if (!result.success) return showNotification("Gagal menutup materi.", "error");
-                await refreshAllData();
-                showNotification("Sesi materi telah ditutup.", "success");
-            } catch (error) {
-                showNotification("Gagal menutup materi.", "error");
-            }
-        }
-
-        window.deleteMaterial = async function(matId) {
-            try {
-                const result = await apiPost('deleteMaterial', { id: matId });
-                if (!result.success) return showNotification("Gagal menghapus materi.", "error");
-                await refreshAllData();
-                showNotification("Materi dihapus.", "success");
-            } catch (error) {
-                showNotification("Gagal menghapus materi.", "error");
-            }
-        }
-
-        window.viewPresences = function(matId) {
-            const material = window.appState.materials.find(m => m.id === matId);
-            // Filter presensi hanya untuk materi ini
-            const matPresences = window.appState.presences.filter(p => p.materialId === matId);
-
-            const tbody = document.getElementById('presences-tbody');
-            tbody.innerHTML = '';
-
-            if (matPresences.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="5" class="p-4 text-center text-gray-500">Belum ada presensi untuk sesi ini.</td></tr>';
-            } else {
-                matPresences.forEach(p => {
-                    const date = new Date(p.timestamp).toLocaleString('id-ID', { hour: '2-digit', minute:'2-digit' });
-                    tbody.innerHTML += `
-                        <tr class="border-b border-gray-100 hover:bg-gray-50">
-                            <td class="p-3 font-medium text-gray-800">${p.studentName}<br><span class="text-xs text-gray-500">${p.nrp}</span></td>
-                            <td class="p-3 text-sm">${date}</td>
-                            <td class="p-3 text-xl">${p.rating}</td>
-                            <td class="p-3 text-sm text-gray-600 max-w-xs truncate" title="${p.learned}">${p.learned}</td>
-                            <td class="p-3">
-                                ${p.assignmentLink ? `<a href="${p.assignmentLink}" target="_blank" class="text-indigo-600 hover:underline text-sm break-all"><i class="fas fa-external-link-alt"></i> Lihat Tugas</a>` : '<span class="text-gray-400 text-sm">Tidak ada</span>'}
-                            </td>
-                        </tr>
-                    `;
-                });
-            }
-
-            document.getElementById('presence-modal-title').innerText = `Presensi: ${material.title}`;
-            openModal('viewPresenceModal');
-        }
-
-        // ==========================================
-        // FUNGSI MURID
-        // ==========================================
-        window.openPresenceForm = function(matId, title) {
-            // Cek apakah sudah absen
-            const alreadyPresenced = window.appState.presences.find(p => p.materialId === matId && p.studentId === window.appState.currentUser.id);
-            if (alreadyPresenced) {
-                return showNotification("Kamu sudah mengisi presensi untuk sesi ini!", "info");
-            }
-
-            document.getElementById('active-material-id').value = matId;
-            document.getElementById('student-modal-title').innerText = title;
-            document.getElementById('presensiForm').reset();
-            resetEmoji();
-            openModal('studentPresenceModal');
-        }
-
-        window.submitPresence = async function(e) {
-            e.preventDefault();
-            const matId = document.getElementById('active-material-id').value;
-            const learned = document.getElementById('didapat').value;
-            const assignment = document.getElementById('tugas').value;
-            const rating = document.getElementById('rating_perasaan').value;
-
-            if(!rating) return showNotification("Jangan lupa pilih emoji perasaanmu! 😊", "error");
-
-            try {
-                showLoading("Mengirim datamu...");
-                const result = await apiPost('addPresence', {
-                    materialId: matId,
-                    studentId: window.appState.currentUser.id,
-                    studentName: window.appState.currentUser.name,
-                    nrp: window.appState.currentUser.nrp,
-                    learned: learned,
-                    assignmentLink: assignment,
-                    rating: rating
-                });
-                hideLoading();
-
-                if (!result.success) {
-                    return showNotification(result.message || "Gagal mengirim. Coba lagi ya.", "error");
-                }
-
-                await refreshAllData();
-                showNotification("Yeay! Presensi & Tugas berhasil dikirim 🎉", "success");
-                closeModal('studentPresenceModal');
-            } catch (error) {
-                hideLoading();
-                showNotification("Oops, gagal mengirim. Coba lagi ya.", "error");
-                console.error(error);
-            }
-        }
-
-        // Jalankan Inisialisasi saat load
-        window.onload = initApp;
-
-    </script>
-
-
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <style>
-        body {
-            font-family: 'Nunito', sans-serif;
-            background: #f4f7fe;
-            min-height: 100vh;
-        }
-
         .glass-card {
             background: rgba(255, 255, 255, 0.95);
             backdrop-filter: blur(10px);
-            border: 1px solid rgba(255, 255, 255, 0.5);
-            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
         }
-
-        .gradient-bg {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        }
-
-        /* Emoji Rating */
-        .emoji-btn {
-            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-            filter: grayscale(100%) opacity(0.5);
-            cursor: pointer;
-        }
-        .emoji-btn:hover { transform: scale(1.2); filter: grayscale(0%) opacity(1); }
-        .emoji-btn.active { transform: scale(1.3); filter: grayscale(0%) opacity(1); animation: bounce 0.5s; }
-
-        @keyframes bounce {
-            0%, 100% { transform: scale(1.3); }
-            50% { transform: scale(1.5); }
-        }
-
-        /* Custom Scrollbar */
-        ::-webkit-scrollbar { width: 6px; height: 6px; }
-        ::-webkit-scrollbar-track { background: transparent; }
-        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
-        ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
-        
-        .hide-scroll::-webkit-scrollbar { display: none; }
     </style>
 </head>
-<body class="text-gray-800">
+<body class="bg-slate-100 min-h-screen text-slate-800">
 
-    <!-- Loading Utama -->
-    <div id="main-loading" class="fixed inset-0 bg-white z-50 flex flex-col items-center justify-center">
-        <div class="w-16 h-16 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin mb-4"></div>
-        <p class="text-indigo-800 font-bold text-lg animate-pulse">Menyiapkan LMS...</p>
-    </div>
-
-    <!-- ========================================== -->
-    <!-- VIEW: AUTHENTICATION -->
-    <!-- ========================================== -->
-    <div id="auth-view" class="hidden min-h-screen flex items-center justify-center p-4 gradient-bg relative overflow-hidden">
-        <!-- Dekorasi Background -->
-        <div class="absolute top-0 left-0 w-64 h-64 bg-pink-400 rounded-full mix-blend-multiply filter blur-3xl opacity-30 -translate-x-1/2 -translate-y-1/2"></div>
-        <div class="absolute bottom-0 right-0 w-64 h-64 bg-yellow-300 rounded-full mix-blend-multiply filter blur-3xl opacity-30 translate-x-1/2 translate-y-1/2"></div>
-
-        <div class="glass-card w-full max-w-md rounded-3xl p-8 relative z-10">
-            <div class="text-center mb-8">
-                <div class="inline-block bg-indigo-100 text-indigo-600 p-4 rounded-2xl mb-4 shadow-sm">
-                    <i class="fas fa-graduation-cap text-4xl"></i>
-                </div>
-                <h1 class="text-3xl font-extrabold text-gray-800 tracking-tight">Ruang Belajar</h1>
-                <p class="text-gray-500 font-medium mt-1">Sistem Presensi & Materi Terpadu</p>
+    <!-- Navigation -->
+    <nav class="bg-indigo-600 text-white shadow-lg p-4 sticky top-0 z-50">
+        <div class="container mx-auto flex justify-between items-center">
+            <div class="flex items-center space-x-3">
+                <i class="fa-brands fa-google-drive text-2xl"></i>
+                <span class="text-xl font-bold tracking-wide">Drive Dashboard <span class="font-light text-indigo-200">| Auliya Dhava</span></span>
             </div>
-
-            <!-- Tab Navigasi Auth -->
-            <div class="flex bg-gray-100 rounded-xl p-1 mb-6">
-                <button onclick="toggleAuthRole('student')" id="tab-student" class="flex-1 py-2 rounded-lg font-bold text-sm bg-white shadow text-indigo-600 transition-all">Murid</button>
-                <button onclick="toggleAuthRole('admin')" id="tab-admin" class="flex-1 py-2 rounded-lg font-bold text-sm text-gray-500 hover:text-gray-700 transition-all">Admin</button>
+            <div class="hidden md:flex space-x-6">
+                <a href="#akademik" class="hover:text-indigo-200 transition"><i class="fa-solid fa-graduation-cap mr-1"></i> Akademik</a>
+                <a href="#instansi" class="hover:text-indigo-200 transition"><i class="fa-solid fa-briefcase mr-1"></i> Instansi</a>
+                <a href="#gamedev" class="hover:text-indigo-200 transition"><i class="fa-solid fa-gamepad mr-1"></i> Game Dev</a>
             </div>
+        </div>
+    </nav>
 
-            <!-- Login/Register Murid -->
-            <div id="student-auth-section">
-                <!-- Mode Selector -->
-                <div class="flex justify-center mb-4 gap-4 text-sm font-bold">
-                    <button onclick="toggleAuthMode('login')" id="mode-login-btn" class="text-indigo-600 border-b-2 border-indigo-600 pb-1">Masuk</button>
-                    <button onclick="toggleAuthMode('register')" id="mode-register-btn" class="text-gray-400 pb-1">Daftar Akun</button>
+    <!-- Main Content -->
+    <main class="container mx-auto p-6 mt-4">
+        
+        <!-- Welcome Banner -->
+        <div class="bg-gradient-to-r from-blue-500 to-indigo-600 rounded-2xl p-8 text-white mb-8 shadow-md">
+            <h1 class="text-3xl font-bold mb-2">Selamat Datang di Workspace Anda</h1>
+            <p class="text-blue-100 text-lg">Semua file, tugas kuliah, administrasi sekolah, dan proyek Unity Anda terorganisir di satu tempat.</p>
+        </div>
+
+        <!-- Dashboard Grid -->
+        <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-2 gap-6">
+
+            <!-- Akademik Card -->
+            <section id="akademik" class="glass-card rounded-2xl p-6 transition hover:shadow-lg">
+                <div class="flex items-center justify-between mb-4 border-b border-gray-100 pb-3">
+                    <h2 class="text-xl font-bold text-slate-700"><i class="fa-solid fa-graduation-cap text-blue-500 mr-2"></i> Tugas Kuliah & Akademik</h2>
+                    <span class="bg-blue-100 text-blue-700 text-xs font-semibold px-2.5 py-0.5 rounded-full">Politeknik LP3I</span>
                 </div>
-
-                <!-- Form Login Murid -->
-                <div id="student-login-form">
-                    <div class="space-y-4">
-                        <div>
-                            <label class="block text-sm font-bold text-gray-700 mb-1">NRP</label>
-                            <div class="relative">
-                                <i class="fas fa-id-badge absolute left-4 top-3.5 text-gray-400"></i>
-                                <input type="text" id="login-nrp" placeholder="Masukkan NRP kamu" class="w-full pl-11 pr-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none">
+                <div class="space-y-3">
+                    <a href="#" class="group block p-3 rounded-xl hover:bg-slate-50 transition border border-transparent hover:border-slate-200">
+                        <div class="flex items-start">
+                            <i class="fa-solid fa-file-pdf text-red-500 text-xl mr-3 mt-1"></i>
+                            <div>
+                                <h3 class="font-semibold text-slate-800 group-hover:text-blue-600 transition">Tugas Ke-1 Rekayasa Instalasi Jaringan</h3>
+                                <p class="text-sm text-slate-500">Perancangan Jaringan Dual-Building Studio</p>
                             </div>
                         </div>
-                        <button onclick="loginAsStudent()" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 rounded-xl transition-all shadow-lg shadow-indigo-200 mt-2">Masuk Ruangan</button>
-                    </div>
-                </div>
-
-                <!-- Form Register Murid -->
-                <form id="registerForm" onsubmit="registerStudent(event)" class="hidden space-y-4">
-                    <div id="reg-status-warning" class="hidden p-3 bg-red-50 text-red-600 text-sm rounded-lg mb-2 font-semibold">
-                        <i class="fas fa-info-circle mr-1"></i> Pendaftaran sedang ditutup oleh Admin.
-                    </div>
-                    <div>
-                        <label class="block text-sm font-bold text-gray-700 mb-1">Nama Lengkap</label>
-                        <input type="text" id="reg-name" required placeholder="Cth: Budi Santoso" class="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none">
-                    </div>
-                    <div>
-                        <label class="block text-sm font-bold text-gray-700 mb-1">NRP(Sebagai ID Masuk)</label>
-                        <input type="text" id="reg-nrp" required placeholder="Cth: 123456789" class="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none">
-                    </div>
-                    <div>
-                        <label class="block text-sm font-bold text-gray-700 mb-1">Kelas</label>
-                        <select id="reg-kelas" required class="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none appearance-none">
-                            <option value="" disabled selected>Pilih Kelas...</option>
-                            <option value="X Internasional 1">X Internasional 1</option>
-                            <option value="X Internasional 2">X Internasional 2</option>
-                            <option value="X Internasional 3">X Internasional 3</option>
-                            <option value="X Internasional 4">X Internasional 4</option>
-                            <option value="X Unggulan 1">X Unggulan 1</option>
-                            <option value="X Unggulan 2">X Unggulan 2</option>
-                            <option value="X Unggulan 3">X Unggulan 3</option>
-                            <option value="X Unggulan 4">X Unggulan 4</option>
-                            <option value="X Unggulan 5">X Unggulan 5</option>
-                            <option value="X Unggulan 6">X Unggulan 6</option>
-                            <option value="X Unggulan 7">X Unggulan 7</option>
-                            <option value="X Unggulan 8">X Unggulan 8</option>
-                            <option value="X Reguler 1">X Reguler 1</option>
-                            <option value="X Reguler 2">X Reguler 2</option>
-                            <option value="X Reguler 3">X Reguler 3</option>
-                            <option value="X Reguler 4">X Reguler 4</option>
-                            <option value="X Reguler 5">X Reguler 5</option>
-                            <option value="X Reguler 6">X Reguler 6</option>
-                            <option value="X Reguler 7">X Reguler 7</option>
-                            <option value="XI Internasional 1">XI Internasional 1</option>
-                            <option value="XI Internasional 2">XI Internasional 2</option>
-                            <option value="XI Internasional 3">XI Internasional 3</option>
-                            <option value="XI Internasional 4">XI Internasional 4</option>
-                            <option value="XI Unggulan 1">XI Unggulan 1</option>
-                            <option value="XI Unggulan 2">XI Unggulan 2</option>
-                            <option value="XI Unggulan 3">XI Unggulan 3</option>
-                            <option value="XI Unggulan 4">XI Unggulan 4</option>
-                            <option value="XI Unggulan 5">XI Unggulan 5</option>
-                            <option value="XI Unggulan 6">XI Unggulan 6</option>
-                            <option value="XI Unggulan 7">XI Unggulan 7</option>
-                            <option value="XI Unggulan 8">XI Unggulan 8</option>
-                            <option value="XI Reguler 1">XI Reguler 1</option>
-                            <option value="XI Reguler 2">XI Reguler 2</option>
-                            <option value="XI Reguler 3">XI Reguler 3</option>
-                            <option value="XI Reguler 4">XI Reguler 4</option>
-                            <option value="XI Reguler 5">XI Reguler 5</option>
-                            <option value="XI Reguler 6">XI Reguler 6</option>
-                            <option value="XI Reguler 7">XI Reguler 7</option>
-                            <option value="XI Reguler 8">XI Reguler 8</option>
-                            <option value="XI Reguler 9">XI Reguler 9</option>
-                            <option value="XI Reguler 10">XI Reguler 10</option>
-                            <option value="XII Internasional 1">XII Internasional 1</option>
-                            <option value="XII Internasional 2">XII Internasional 2</option>
-                            <option value="XII Internasional 3">XII Internasional 3</option>
-                            <option value="XII Internasional 4">XII Internasional 4</option>
-                            <option value="XII Unggulan 1">XII Unggulan 1</option>
-                            <option value="XII Unggulan 2">XII Unggulan 2</option>
-                            <option value="XII Unggulan 3">XII Unggulan 3</option>
-                            <option value="XII Unggulan 4">XII Unggulan 4</option>
-                            <option value="XII Unggulan 5">XII Unggulan 5</option>
-                            <option value="XII Unggulan 6">XII Unggulan 6</option>
-                            <option value="XII Unggulan 7">XII Unggulan 7</option>
-                            <option value="XII Unggulan 8">XII Unggulan 8</option>
-                            <option value="XII Reguler 1">XII Reguler 1</option>
-                            <option value="XII Reguler 2">XII Reguler 2</option>
-                            <option value="XII Reguler 3">XII Reguler 3</option>
-                            <option value="XII Reguler 4">XII Reguler 4</option>
-                            <option value="XII Reguler 5">XII Reguler 5</option>
-                            <option value="XII Reguler 6">XII Reguler 6</option>
-                            <option value="XII Reguler 7">XII Reguler 7</option>
-                            <option value="XII Reguler 8">XII Reguler 8</option>
-                            <option value="XII Reguler 9">XII Reguler 9</option>
-                        </select>
-                    </div>
-                    <button type="submit" id="reg-submit-btn" class="w-full bg-green-500 hover:bg-green-600 text-white font-bold py-3 rounded-xl transition-all shadow-lg shadow-green-200 mt-2">Daftar Sekarang</button>
-                </form>
-            </div>
-
-            <!-- Login Admin -->
-            <div id="admin-auth-section" class="hidden">
-                <div class="bg-indigo-50 p-4 rounded-xl mb-4 border border-indigo-100 text-sm text-indigo-700">
-                    <i class="fas fa-lock mr-2"></i> Area khusus pengajar/admin.
-                </div>
-                <div class="space-y-4">
-                    <div>
-                        <label class="block text-sm font-bold text-gray-700 mb-1">Passcode Rahasia</label>
-                        <div class="relative">
-                            <i class="fas fa-key absolute left-4 top-3.5 text-gray-400"></i>
-                            <input type="password" id="admin-passcode" placeholder="Masukkan passcode" class="w-full pl-11 pr-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none">
+                    </a>
+                    <a href="#" class="group block p-3 rounded-xl hover:bg-slate-50 transition border border-transparent hover:border-slate-200">
+                        <div class="flex items-start">
+                            <i class="fa-solid fa-folder text-yellow-400 text-xl mr-3 mt-1"></i>
+                            <div>
+                                <h3 class="font-semibold text-slate-800 group-hover:text-blue-600 transition">KELOMPOK 2 & 3</h3>
+                                <p class="text-sm text-slate-500">Folder tugas kelompok aktif</p>
+                            </div>
                         </div>
-                    </div>
-                    <button onclick="loginAsAdmin()" class="w-full bg-gray-800 hover:bg-gray-900 text-white font-bold py-3 rounded-xl transition-all shadow-lg mt-2">Akses Dashboard Admin</button>
+                    </a>
                 </div>
-            </div>
-        </div>
-    </div>
+            </section>
 
-    <!-- ========================================== -->
-    <!-- VIEW: ADMIN DASHBOARD -->
-    <!-- ========================================== -->
-    <div id="admin-dashboard" class="hidden min-h-screen bg-gray-50">
-        <!-- Navbar -->
-        <nav class="bg-white shadow-sm px-6 py-4 flex justify-between items-center sticky top-0 z-30">
-            <div class="flex items-center gap-3">
-                <div class="bg-gray-800 text-white p-2 rounded-lg"><i class="fas fa-chalkboard-teacher"></i></div>
-                <h1 class="text-xl font-extrabold text-gray-800">Admin Panel</h1>
-            </div>
-            <button onclick="logout()" class="text-gray-500 hover:text-red-500 font-bold transition-colors text-sm flex items-center gap-2">
-                Keluar <i class="fas fa-sign-out-alt"></i>
-            </button>
-        </nav>
-
-        <div class="max-w-6xl mx-auto p-6 space-y-6">
-            <!-- Control Panel -->
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <!-- Status Pendaftaran -->
-                <div class="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 flex items-center justify-between">
-                    <div>
-                        <h3 class="font-bold text-lg text-gray-800">Status Pendaftaran Murid</h3>
-                        <p class="text-sm text-gray-500 mt-1">Buka jika ada murid baru yang perlu membuat akun.</p>
-                    </div>
-                    <label class="relative inline-flex items-center cursor-pointer">
-                        <input type="checkbox" id="toggle-reg-checkbox" class="sr-only peer" onchange="toggleRegistration()">
-                        <div class="w-14 h-7 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-6 after:w-6 after:transition-all peer-checked:bg-green-500"></div>
-                        <span class="ml-3 text-sm font-bold text-gray-700" id="toggle-reg-text">Tertutup</span>
-                    </label>
+            <!-- Instansi Card -->
+            <section id="instansi" class="glass-card rounded-2xl p-6 transition hover:shadow-lg">
+                <div class="flex items-center justify-between mb-4 border-b border-gray-100 pb-3">
+                    <h2 class="text-xl font-bold text-slate-700"><i class="fa-solid fa-briefcase text-emerald-500 mr-2"></i> Pekerjaan & Instansi</h2>
+                    <span class="bg-emerald-100 text-emerald-700 text-xs font-semibold px-2.5 py-0.5 rounded-full">SMA Plus PGRI</span>
                 </div>
-                
-                <!-- Buat Sesi Baru -->
-                <div class="bg-indigo-600 p-6 rounded-2xl shadow-sm shadow-indigo-200 text-white flex items-center justify-between">
-                    <div>
-                        <h3 class="font-bold text-lg">Mulai Sesi Materi Baru</h3>
-                        <p class="text-indigo-100 text-sm mt-1">Buat ruang agar murid bisa mengisi presensi & tugas.</p>
-                    </div>
-                    <button onclick="openModal('createMaterialModal')" class="bg-white text-indigo-600 hover:bg-gray-50 px-5 py-2.5 rounded-xl font-bold transition-colors flex items-center gap-2 shadow-sm">
-                        <i class="fas fa-plus"></i> Buat
-                    </button>
-                </div>
-            </div>
-
-            <!-- List Materi -->
-            <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-                <div class="p-6 border-b border-gray-100 flex justify-between items-center">
-                    <h2 class="text-xl font-bold text-gray-800">Daftar Sesi Materi</h2>
-                </div>
-                <div class="p-0 overflow-x-auto">
-                    <table class="w-full text-left border-collapse">
-                        <thead>
-                            <tr class="bg-gray-50 text-gray-600 text-sm">
-                                <th class="p-4 font-bold w-1/3">Materi</th>
-                                <th class="p-4 font-bold">Pembina</th>
-                                <th class="p-4 font-bold">Status</th>
-                                <th class="p-4 font-bold">Tanggal Dibuat</th>
-                                <th class="p-4 font-bold text-right">Aksi</th>
-                            </tr>
-                        </thead>
-                        <tbody id="admin-materials-list" class="divide-y divide-gray-100 text-sm">
-                            <!-- Diisi oleh JS -->
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- ========================================== -->
-    <!-- VIEW: STUDENT DASHBOARD -->
-    <!-- ========================================== -->
-    <div id="student-dashboard" class="hidden min-h-screen bg-gray-50">
-        <!-- Navbar -->
-        <nav class="gradient-bg shadow-lg px-4 sm:px-6 py-4 flex justify-between items-center sticky top-0 z-30">
-            <div class="flex items-center gap-3 text-white">
-                <div class="bg-white/20 p-2 rounded-lg backdrop-blur-sm"><i class="fas fa-user-graduate text-xl"></i></div>
-                <div>
-                    <p class="text-xs text-indigo-100 font-semibold uppercase tracking-wider">Halo, Pelajar!</p>
-                    <h1 class="text-lg font-extrabold truncate max-w-[150px] sm:max-w-xs" id="student-name-display">Nama Murid</h1>
-                </div>
-            </div>
-            <button onclick="logout()" class="bg-white/10 hover:bg-white/20 text-white px-4 py-2 rounded-xl font-bold transition-colors text-sm border border-white/20">
-                Keluar
-            </button>
-        </nav>
-
-        <div class="max-w-4xl mx-auto p-4 sm:p-6 space-y-6">
-            <!-- Info Card -->
-            <div class="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 flex items-start gap-4">
-                <div class="w-12 h-12 bg-yellow-100 text-yellow-600 rounded-full flex items-center justify-center flex-shrink-0 text-2xl">
-                    💡
-                </div>
-                <div>
-                    <h3 class="font-bold text-gray-800 text-lg">Papan Informasi</h3>
-                    <p class="text-gray-600 text-sm mt-1">Di bawah ini adalah daftar materi yang ada. Jika ada sesi yang berstatus <span class="inline-block px-2 py-0.5 bg-green-100 text-green-700 rounded text-xs font-bold mx-1">Berlangsung</span>, klik untuk mengisi presensi dan mengumpulkan tugasmu!</p>
-                </div>
-            </div>
-
-            <!-- List Materi -->
-            <h2 class="text-xl font-extrabold text-gray-800 pt-2 border-b border-gray-200 pb-2">Kelas & Materi Saya</h2>
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4" id="student-materials-list">
-                <!-- Diisi oleh JS -->
-            </div>
-        </div>
-    </div>
-
-
-    <!-- ========================================== -->
-    <!-- MODALS & OVERLAYS -->
-    <!-- ========================================== -->
-
-    <!-- Global Loading Overlay (Semi-transparent) -->
-    <div id="loading-overlay" class="fixed inset-0 bg-white/80 backdrop-blur-sm z-[100] hidden flex-col items-center justify-center">
-        <div class="w-12 h-12 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin mb-3"></div>
-        <p class="text-indigo-800 font-bold" id="loading-text">Memproses...</p>
-    </div>
-
-    <!-- Global Notification Modal -->
-    <div id="notification-modal" class="fixed inset-0 bg-black/40 backdrop-blur-sm z-[110] hidden flex items-center justify-center p-4 transition-opacity duration-300 opacity-0">
-        <div class="bg-white rounded-2xl p-6 md:p-8 max-w-sm w-full text-center shadow-2xl transform scale-95 transition-transform duration-300" id="notif-content">
-            <div id="notif-icon" class="w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 text-3xl"></div>
-            <h3 class="text-xl font-bold text-gray-800 mb-2" id="notif-title">Pemberitahuan</h3>
-            <button onclick="closeNotification()" class="w-full mt-6 py-3 bg-gray-800 hover:bg-gray-900 text-white rounded-xl font-bold transition-colors">OK Mengerti</button>
-        </div>
-    </div>
-
-    <!-- Modal Admin: Buat Materi -->
-    <div id="createMaterialModal" class="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 hidden items-center justify-center p-4">
-        <div class="bg-white rounded-2xl w-full max-w-md shadow-2xl overflow-hidden">
-            <div class="px-6 py-4 border-b border-gray-100 flex justify-between items-center bg-gray-50">
-                <h3 class="font-bold text-lg text-gray-800">Buat Sesi Baru</h3>
-                <button onclick="closeModal('createMaterialModal')" class="text-gray-400 hover:text-red-500"><i class="fas fa-times"></i></button>
-            </div>
-            <form id="createMaterialForm" onsubmit="createNewMaterial(event)" class="p-6 space-y-4">
-                <div>
-                    <label class="block text-sm font-bold text-gray-700 mb-1">Judul Materi / Sesi</label>
-                    <input type="text" id="mat-title" required placeholder="Cth: Pertemuan 1 - Pengenalan Alam" class="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none">
-                </div>
-                <div>
-                    <label class="block text-sm font-bold text-gray-700 mb-1">Nama Pembina</label>
-                    <input type="text" id="mat-pembina" required placeholder="Cth: Bpk. Dhava" class="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none">
-                </div>
-                <div>
-                    <label class="block text-sm font-bold text-gray-700 mb-1">Deskripsi Singkat (Opsional)</label>
-                    <textarea id="mat-desc" rows="2" placeholder="Apa yang dipelajari hari ini?" class="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none resize-none"></textarea>
-                </div>
-                <button type="submit" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 rounded-xl transition-all shadow-md mt-4">Mulai Sesi Sekarang</button>
-            </form>
-        </div>
-    </div>
-
-    <!-- Modal Admin: Lihat Presensi -->
-    <div id="viewPresenceModal" class="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 hidden items-center justify-center p-4">
-        <div class="bg-white rounded-2xl w-full max-w-4xl max-h-[90vh] shadow-2xl flex flex-col">
-            <div class="px-6 py-4 border-b border-gray-100 flex justify-between items-center bg-indigo-50">
-                <h3 class="font-bold text-lg text-indigo-900" id="presence-modal-title">Data Presensi</h3>
-                <button onclick="closeModal('viewPresenceModal')" class="text-indigo-400 hover:text-indigo-800 bg-white rounded-full p-2 w-8 h-8 flex items-center justify-center shadow-sm"><i class="fas fa-times"></i></button>
-            </div>
-            <div class="p-0 overflow-y-auto hide-scroll flex-1">
-                <table class="w-full text-left border-collapse">
-                    <thead class="sticky top-0 bg-white border-b border-gray-200 shadow-sm z-10">
-                        <tr class="text-gray-600 text-sm">
-                            <th class="p-4 font-bold">Nama / NRP</th>
-                            <th class="p-4 font-bold">Waktu</th>
-                            <th class="p-4 font-bold">Kesan</th>
-                            <th class="p-4 font-bold">Yang Dipelajari</th>
-                            <th class="p-4 font-bold">Tugas</th>
-                        </tr>
-                    </thead>
-                    <tbody id="presences-tbody" class="divide-y divide-gray-100">
-                        <!-- Diisi JS -->
-                    </tbody>
-                </table>
-            </div>
-        </div>
-    </div>
-
-    <!-- Modal Murid: Form Presensi & Tugas -->
-    <div id="studentPresenceModal" class="fixed inset-0 bg-black/60 backdrop-blur-md z-50 hidden flex items-center justify-center p-2 sm:p-4 overflow-y-auto">
-        <div class="bg-white rounded-3xl w-full max-w-2xl shadow-2xl relative my-auto">
-            
-            <button onclick="closeModal('studentPresenceModal')" class="absolute top-4 right-4 bg-gray-100 hover:bg-gray-200 text-gray-600 rounded-full w-10 h-10 flex items-center justify-center transition-colors z-10">
-                <i class="fas fa-times"></i>
-            </button>
-
-            <div class="p-6 sm:p-8">
-                <div class="text-center mb-6">
-                    <div class="inline-block bg-green-100 text-green-600 p-3 rounded-2xl mb-3 shadow-sm">
-                        <i class="fas fa-pen-fancy text-2xl"></i>
-                    </div>
-                    <h2 class="text-2xl font-extrabold text-gray-800" id="student-modal-title">Judul Materi</h2>
-                    <p class="text-gray-500 text-sm mt-1">Isi data di bawah ini untuk mencatat kehadiran dan tugasmu.</p>
-                </div>
-
-                <form id="presensiForm" onsubmit="submitPresence(event)" class="space-y-5">
-                    <input type="hidden" id="active-material-id">
-                    
-                    <!-- Input Yang Didapat -->
-                    <div class="space-y-1">
-                        <label class="block text-sm font-bold text-gray-700 ml-1">Apa yang kamu pelajari hari ini? 💡 <span class="text-red-500">*</span></label>
-                        <textarea id="didapat" required rows="2" placeholder="Ceritakan singkat hal baru yang kamu dapat..." class="w-full p-4 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none resize-none text-sm"></textarea>
-                    </div>
-
-                    <!-- Input Tugas -->
-                    <div class="space-y-1">
-                        <label class="block text-sm font-bold text-gray-700 ml-1">Kumpulkan Tugas (Link/Teks) 📎</label>
-                        <input type="text" id="tugas" placeholder="Cth: Link Google Drive, Link Canva, atau jawaban singkat..." class="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none text-sm">
-                        <p class="text-xs text-gray-400 ml-1">Kosongkan jika tidak ada tugas.</p>
-                    </div>
-
-                    <!-- Input Kesan (Emoji) -->
-                    <div class="bg-indigo-50/50 p-4 rounded-2xl border border-indigo-100 text-center">
-                        <label class="block text-sm font-bold text-gray-800 mb-3">Bagaimana perasaanmu tentang materi ini? 🎨 <span class="text-red-500">*</span></label>
-                        <input type="hidden" id="rating_perasaan" required>
-                        <div class="flex justify-center items-center gap-4 sm:gap-6">
-                            <button type="button" class="emoji-btn text-4xl" onclick="setPerasaan('Membosankan', this)">🥱</button>
-                            <button type="button" class="emoji-btn text-4xl" onclick="setPerasaan('Biasa Saja', this)">😐</button>
-                            <button type="button" class="emoji-btn text-4xl" onclick="setPerasaan('Seru', this)">😊</button>
-                            <button type="button" class="emoji-btn text-4xl" onclick="setPerasaan('Sangat Menyenangkan!', this)">🤩</button>
+                <div class="space-y-3">
+                    <a href="#" class="group block p-3 rounded-xl hover:bg-slate-50 transition border border-transparent hover:border-slate-200">
+                        <div class="flex items-start">
+                            <i class="fa-brands fa-markdown text-sky-500 text-xl mr-3 mt-1"></i>
+                            <div>
+                                <h3 class="font-semibold text-slate-800 group-hover:text-emerald-600 transition">Script_Presentasi_Fasilitas_SMA_Plus_PGRI.md</h3>
+                                <p class="text-sm text-slate-500">Naskah presentasi fasilitas sekolah reguler</p>
+                            </div>
                         </div>
-                        <p id="teks_perasaan" class="text-xs text-indigo-400 font-bold h-4 mt-2">Pilih emoji di atas</p>
-                    </div>
-
-                    <button type="submit" class="w-full bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white font-bold text-lg py-3.5 rounded-xl shadow-lg transform hover:-translate-y-0.5 transition-all flex justify-center items-center gap-2">
-                        <span>Kirim Sekarang</span>
-                        <i class="fas fa-paper-plane"></i>
-                    </button>
-                </form>
-            </div>
-        </div>
-    </div>
-
-
-    <script>
-        // ==========================================
-        // UI & LOGIKA DOM
-        // ==========================================
-
-        // Format timestamp jadi tanggal yang aman (anti "Invalid Date")
-        // Menangani createdAt yang datang sebagai number, string angka, atau string ISO
-        function formatDateSafe(rawValue, options) {
-            if (rawValue === undefined || rawValue === null || rawValue === '') return '-';
-
-            let d;
-            const asNumber = Number(rawValue);
-            if (!isNaN(asNumber) && asNumber > 0) {
-                d = new Date(asNumber);
-            } else {
-                d = new Date(rawValue);
-            }
-
-            if (isNaN(d.getTime())) return '-';
-            return d.toLocaleDateString('id-ID', options);
-        }
-
-        function switchToView(viewId) {
-            document.getElementById('auth-view').classList.add('hidden');
-            document.getElementById('admin-dashboard').classList.add('hidden');
-            document.getElementById('student-dashboard').classList.add('hidden');
-            document.getElementById(viewId).classList.remove('hidden');
-        }
-
-        function toggleAuthRole(role) {
-            document.getElementById('tab-student').className = role === 'student' 
-                ? "flex-1 py-2 rounded-lg font-bold text-sm bg-white shadow text-indigo-600 transition-all" 
-                : "flex-1 py-2 rounded-lg font-bold text-sm text-gray-500 hover:text-gray-700 transition-all";
-            
-            document.getElementById('tab-admin').className = role === 'admin' 
-                ? "flex-1 py-2 rounded-lg font-bold text-sm bg-white shadow text-indigo-600 transition-all" 
-                : "flex-1 py-2 rounded-lg font-bold text-sm text-gray-500 hover:text-gray-700 transition-all";
-
-            if (role === 'student') {
-                document.getElementById('student-auth-section').classList.remove('hidden');
-                document.getElementById('admin-auth-section').classList.add('hidden');
-            } else {
-                document.getElementById('student-auth-section').classList.add('hidden');
-                document.getElementById('admin-auth-section').classList.remove('hidden');
-            }
-        }
-
-        function toggleAuthMode(mode) {
-            document.getElementById('mode-login-btn').className = mode === 'login' 
-                ? "text-indigo-600 border-b-2 border-indigo-600 pb-1" : "text-gray-400 pb-1";
-            document.getElementById('mode-register-btn').className = mode === 'register' 
-                ? "text-indigo-600 border-b-2 border-indigo-600 pb-1" : "text-gray-400 pb-1";
-
-            if (mode === 'login') {
-                document.getElementById('student-login-form').classList.remove('hidden');
-                document.getElementById('registerForm').classList.add('hidden');
-            } else {
-                document.getElementById('student-login-form').classList.add('hidden');
-                document.getElementById('registerForm').classList.remove('hidden');
-                updateAuthUI(); // Cek status pendaftaran saat buka tab register
-            }
-        }
-
-        function updateAuthUI() {
-            const isOpen = window.appState.settings.registrationOpen;
-            const regBtn = document.getElementById('reg-submit-btn');
-            const warning = document.getElementById('reg-status-warning');
-            
-            if (isOpen) {
-                regBtn.disabled = false;
-                regBtn.className = "w-full bg-green-500 hover:bg-green-600 text-white font-bold py-3 rounded-xl transition-all shadow-lg shadow-green-200 mt-2";
-                regBtn.innerText = "Daftar Sekarang";
-                warning.classList.add('hidden');
-            } else {
-                regBtn.disabled = true;
-                regBtn.className = "w-full bg-gray-300 text-gray-500 font-bold py-3 rounded-xl mt-2 cursor-not-allowed";
-                regBtn.innerText = "Pendaftaran Ditutup";
-                warning.classList.remove('hidden');
-            }
-        }
-
-        function updateAdminSettingsUI() {
-            const isOpen = window.appState.settings.registrationOpen;
-            document.getElementById('toggle-reg-checkbox').checked = isOpen;
-            document.getElementById('toggle-reg-text').innerText = isOpen ? "Terbuka" : "Tertutup";
-            document.getElementById('toggle-reg-text').className = `ml-3 text-sm font-bold ${isOpen ? 'text-green-600' : 'text-gray-500'}`;
-        }
-
-        // Render untuk Admin
-        function renderAdminMaterials() {
-            const tbody = document.getElementById('admin-materials-list');
-            tbody.innerHTML = '';
-            
-            if(window.appState.materials.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="5" class="p-6 text-center text-gray-500">Belum ada sesi materi yang dibuat.</td></tr>';
-                return;
-            }
-
-            window.appState.materials.forEach(mat => {
-                const isOngoing = mat.status === 'ongoing';
-                const date = formatDateSafe(mat.createdAt, { day: 'numeric', month: 'short', year: 'numeric' });
-                
-                const tr = document.createElement('tr');
-                tr.className = "hover:bg-gray-50 group";
-                tr.innerHTML = `
-                    <td class="p-4">
-                        <div class="font-bold text-gray-800">${mat.title}</div>
-                        <div class="text-xs text-gray-500 truncate max-w-xs mt-1" title="${mat.description || '-'}">${mat.description || '-'}</div>
-                    </td>
-                    <td class="p-4 text-gray-600">${mat.pembina || '-'}</td>
-                    <td class="p-4">
-                        <span class="px-3 py-1 rounded-full text-xs font-bold ${isOngoing ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}">
-                            ${isOngoing ? '<i class="fas fa-circle text-[8px] animate-pulse mr-1"></i> Berlangsung' : 'Selesai'}
-                        </span>
-                    </td>
-                    <td class="p-4 text-gray-500">${date}</td>
-                    <td class="p-4 text-right space-x-2">
-                        <button onclick="viewPresences('${mat.id}')" class="px-3 py-1.5 bg-indigo-50 text-indigo-600 hover:bg-indigo-100 rounded-lg text-xs font-bold transition-colors border border-indigo-100" title="Lihat Hasil Presensi & Tugas">
-                            <i class="fas fa-clipboard-list mr-1"></i> Data
-                        </button>
-                        ${isOngoing 
-                            ? `<button onclick="finishMaterial('${mat.id}')" class="px-3 py-1.5 bg-yellow-50 text-yellow-700 hover:bg-yellow-100 rounded-lg text-xs font-bold transition-colors border border-yellow-100"><i class="fas fa-stop mr-1"></i> Tutup Sesi</button>`
-                            : `<button onclick="deleteMaterial('${mat.id}')" class="px-3 py-1.5 bg-red-50 text-red-600 hover:bg-red-100 rounded-lg text-xs font-bold transition-colors border border-red-100 opacity-0 group-hover:opacity-100"><i class="fas fa-trash"></i></button>`
-                        }
-                    </td>
-                `;
-                tbody.appendChild(tr);
-            });
-        }
-
-        // Render untuk Murid
-        function renderStudentMaterials() {
-            const container = document.getElementById('student-materials-list');
-            container.innerHTML = '';
-
-            if(window.appState.materials.length === 0) {
-                container.innerHTML = '<div class="col-span-full p-8 text-center bg-white rounded-2xl border border-gray-100 text-gray-500">Belum ada materi saat ini. Santai dulu ya! 🏖️</div>';
-                return;
-            }
-
-            // Filter presensi milik murid ini
-            const myPresences = window.appState.presences.filter(p => p.studentId === window.appState.currentUser.id);
-
-            window.appState.materials.forEach(mat => {
-                const isOngoing = mat.status === 'ongoing';
-                const hasFilled = myPresences.some(p => p.materialId === mat.id);
-                const date = formatDateSafe(mat.createdAt, { day: 'numeric', month: 'short' });
-                
-                let actionHtml = '';
-                if (hasFilled) {
-                    actionHtml = `<div class="mt-4 bg-green-50 text-green-700 p-3 rounded-xl text-sm font-bold flex justify-center items-center gap-2 border border-green-100"><i class="fas fa-check-circle"></i> Selesai Dikerjakan</div>`;
-                } else if (isOngoing) {
-                    actionHtml = `<button onclick="openPresenceForm('${mat.id}', '${mat.title.replace(/'/g, "\\'")}')" class="mt-4 w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 rounded-xl transition-all shadow-md flex justify-center items-center gap-2">Isi Presensi & Tugas <i class="fas fa-arrow-right"></i></button>`;
-                } else {
-                    actionHtml = `<div class="mt-4 bg-gray-100 text-gray-500 p-3 rounded-xl text-sm font-bold flex justify-center items-center gap-2">Sesi Telah Berakhir</div>`;
-                }
-
-                container.innerHTML += `
-                    <div class="bg-white rounded-2xl p-5 border ${isOngoing && !hasFilled ? 'border-indigo-300 shadow-md shadow-indigo-100 relative overflow-hidden' : 'border-gray-100 shadow-sm'} flex flex-col h-full">
-                        ${isOngoing && !hasFilled ? '<div class="absolute top-0 right-0 w-16 h-16 bg-indigo-500 rounded-bl-full flex items-start justify-end p-2 opacity-10"><i class="fas fa-star text-2xl text-white"></i></div>' : ''}
-                        
-                        <div class="flex justify-between items-start mb-2">
-                            <span class="text-xs font-bold text-gray-400"><i class="far fa-calendar-alt mr-1"></i> ${date}</span>
-                            ${isOngoing ? '<span class="px-2 py-1 bg-green-100 text-green-700 rounded-lg text-[10px] font-extrabold uppercase tracking-wide flex items-center gap-1"><span class="w-1.5 h-1.5 bg-green-500 rounded-full animate-ping"></span> Live</span>' : ''}
+                    </a>
+                    <a href="#" class="group block p-3 rounded-xl hover:bg-slate-50 transition border border-transparent hover:border-slate-200">
+                        <div class="flex items-start">
+                            <i class="fa-solid fa-file-word text-blue-500 text-xl mr-3 mt-1"></i>
+                            <div>
+                                <h3 class="font-semibold text-slate-800 group-hover:text-emerald-600 transition">DOKUMEN WALAS XR1</h3>
+                                <p class="text-sm text-slate-500">Administrasi wali kelas & materi pembina</p>
+                            </div>
                         </div>
-                        <h3 class="font-extrabold text-lg text-gray-800 leading-tight mb-2">${mat.title}</h3>
-                        ${mat.pembina ? `<p class="text-xs text-indigo-500 font-bold -mt-1 mb-2"><i class="fas fa-chalkboard-teacher mr-1"></i> ${mat.pembina}</p>` : ''}
-                        <p class="text-gray-500 text-sm flex-1">${mat.description || 'Tidak ada deskripsi.'}</p>
-                        ${actionHtml}
-                    </div>
-                `;
-            });
-        }
+                    </a>
+                </div>
+            </section>
 
-        // Utils UI
-        function setPerasaan(nilai, element) {
-            document.querySelectorAll('.emoji-btn').forEach(btn => btn.classList.remove('active'));
-            element.classList.add('active');
-            document.getElementById('rating_perasaan').value = nilai;
-            document.getElementById('teks_perasaan').innerText = nilai;
-            document.getElementById('teks_perasaan').classList.replace('text-indigo-400', 'text-pink-500');
-        }
+            <!-- Game Dev Card -->
+            <section id="gamedev" class="glass-card rounded-2xl p-6 transition hover:shadow-lg">
+                <div class="flex items-center justify-between mb-4 border-b border-gray-100 pb-3">
+                    <h2 class="text-xl font-bold text-slate-700"><i class="fa-brands fa-unity text-slate-800 mr-2"></i> Game Dev & Unity</h2>
+                    <span class="bg-purple-100 text-purple-700 text-xs font-semibold px-2.5 py-0.5 rounded-full">Development</span>
+                </div>
+                <div class="space-y-3">
+                    <a href="#" class="group block p-3 rounded-xl hover:bg-slate-50 transition border border-transparent hover:border-slate-200">
+                        <div class="flex items-start">
+                            <i class="fa-solid fa-server text-gray-600 text-xl mr-3 mt-1"></i>
+                            <div>
+                                <h3 class="font-semibold text-slate-800 group-hover:text-purple-600 transition">Build Server Unity (Gedung A)</h3>
+                                <p class="text-sm text-slate-500">Kompilasi aset 3D & manajemen project</p>
+                            </div>
+                        </div>
+                    </a>
+                    <a href="#" class="group block p-3 rounded-xl hover:bg-slate-50 transition border border-transparent hover:border-slate-200">
+                        <div class="flex items-start">
+                            <i class="fa-solid fa-laptop-code text-indigo-500 text-xl mr-3 mt-1"></i>
+                            <div>
+                                <h3 class="font-semibold text-slate-800 group-hover:text-purple-600 transition">Event Sayembara & Bootcamp Edukatif</h3>
+                                <p class="text-sm text-slate-500">Maret 2026</p>
+                            </div>
+                        </div>
+                    </a>
+                </div>
+            </section>
 
-        function resetEmoji() {
-            document.querySelectorAll('.emoji-btn').forEach(btn => btn.classList.remove('active'));
-            document.getElementById('rating_perasaan').value = '';
-            document.getElementById('teks_perasaan').innerText = 'Pilih emoji di atas';
-            document.getElementById('teks_perasaan').classList.replace('text-pink-500', 'text-indigo-400');
-        }
+            <!-- Personal Notes Card -->
+            <section class="glass-card rounded-2xl p-6 transition hover:shadow-lg">
+                <div class="flex items-center justify-between mb-4 border-b border-gray-100 pb-3">
+                    <h2 class="text-xl font-bold text-slate-700"><i class="fa-solid fa-motorcycle text-orange-500 mr-2"></i> Catatan Personal</h2>
+                    <span class="bg-orange-100 text-orange-700 text-xs font-semibold px-2.5 py-0.5 rounded-full">Aktivitas</span>
+                </div>
+                <div class="space-y-3">
+                    <a href="#" class="group block p-3 rounded-xl hover:bg-slate-50 transition border border-transparent hover:border-slate-200">
+                        <div class="flex items-start">
+                            <i class="fa-solid fa-wrench text-slate-400 text-xl mr-3 mt-1"></i>
+                            <div>
+                                <h3 class="font-semibold text-slate-800 group-hover:text-orange-600 transition">Log Kendaraan (Yamaha R15)</h3>
+                                <p class="text-sm text-slate-500">Perawatan rutin, rantai, dan suku cadang</p>
+                            </div>
+                        </div>
+                    </a>
+                </div>
+            </section>
 
-        function openModal(id) { 
-            const modal = document.getElementById(id);
-            modal.classList.remove('hidden');
-            modal.classList.add('flex');
-        }
-        function closeModal(id) { 
-            const modal = document.getElementById(id);
-            modal.classList.add('hidden');
-            modal.classList.remove('flex');
-        }
+        </div>
+    </main>
 
-        function showLoading(text) {
-            document.getElementById('loading-text').innerText = text;
-            const overlay = document.getElementById('loading-overlay');
-            overlay.classList.remove('hidden');
-            overlay.classList.add('flex');
-        }
-        function hideLoading() {
-            const overlay = document.getElementById('loading-overlay');
-            overlay.classList.add('hidden');
-            overlay.classList.remove('flex');
-        }
+    <footer class="text-center text-slate-500 text-sm py-8 mt-4">
+        <p>&copy; 2026 Workspace Auliya Dhava. Disusun secara otomatis dari Google Drive.</p>
+    </footer>
 
-        function showNotification(msg, type) {
-            const modal = document.getElementById('notification-modal');
-            const content = document.getElementById('notif-content');
-            
-            document.getElementById('notif-title').innerText = msg;
-            
-            const icon = document.getElementById('notif-icon');
-            if(type === 'success') {
-                icon.className = "w-16 h-16 bg-green-100 text-green-500 rounded-full flex items-center justify-center mx-auto mb-4 text-3xl";
-                icon.innerHTML = '<i class="fas fa-check"></i>';
-            } else if (type === 'error') {
-                icon.className = "w-16 h-16 bg-red-100 text-red-500 rounded-full flex items-center justify-center mx-auto mb-4 text-3xl";
-                icon.innerHTML = '<i class="fas fa-exclamation-triangle"></i>';
-            } else {
-                icon.className = "w-16 h-16 bg-blue-100 text-blue-500 rounded-full flex items-center justify-center mx-auto mb-4 text-3xl";
-                icon.innerHTML = '<i class="fas fa-info"></i>';
-            }
-
-            modal.classList.remove('hidden');
-            setTimeout(() => {
-                modal.classList.remove('opacity-0');
-                content.classList.remove('scale-95');
-            }, 10);
-        }
-
-        function closeNotification() {
-            const modal = document.getElementById('notification-modal');
-            const content = document.getElementById('notif-content');
-            modal.classList.add('opacity-0');
-            content.classList.add('scale-95');
-            setTimeout(() => {
-                modal.classList.add('hidden');
-            }, 300);
-        }
-
-        // Fungsi Copy Code untuk Apps Script
-        function copyGasCode() {
-            const codeText = document.getElementById('gasCodeContent').innerText;
-            const tempTextArea = document.createElement("textarea");
-            tempTextArea.value = codeText;
-            document.body.appendChild(tempTextArea);
-            tempTextArea.select();
-            try {
-                document.execCommand('copy');
-                const copyBtn = document.getElementById('copyCodeBtn');
-                const originalHtml = copyBtn.innerHTML;
-                copyBtn.innerHTML = '<i class="fas fa-check"></i> Tersalin!';
-                copyBtn.classList.add('bg-green-500');
-                setTimeout(() => {
-                    copyBtn.innerHTML = originalHtml;
-                    copyBtn.classList.remove('bg-green-500');
-                }, 2000);
-            } catch (err) {
-                console.error('Gagal menyalin teks', err);
-            }
-            document.body.removeChild(tempTextArea);
-        }
-    </script>
 </body>
 </html>
